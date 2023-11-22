@@ -12,28 +12,38 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
+// MQTT MQTT MQTT MQTT MQTT ------------------------------------------
+
+// listen to mqtt topics and send to data channel
 func mqttListen() {
 	client := mqttConnect("mqttRelay", config.BrokerURL, config.BrokerPort)
 	for _, topic := range config.BrokerTopics {
-		go subscribeAndSend(client, topic)
+		go subscribeMqttSendToChannel(client, topic)
 	}
 
 	// Wait for some time to allow Goroutines to subscribe
 	time.Sleep(2 * time.Second)
 }
-func subscribeAndSend(client mqtt.Client, topic string) {
+func subscribeMqttSendToChannel(client mqtt.Client, topic string) {
 	client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
 		// Send the data along with the topic information to the channel
-		dataChannel <- Message{Topic: topic, Data: string(msg.Payload())}
+		mqttDataChannel <- Message{Topic: topic, Data: string(msg.Payload())}
 	})
 }
-func processData() {
+
+// publish
+func mqttPublish(publishClient mqtt.Client, topic string, data string){
+	publishClient.Publish(topic, 0, false, data)
+}
+
+// Handle Received mqtt data
+func processMqttData() {
 	for {
 		select {
-		case message := <-dataChannel:
+		case message := <-mqttDataChannel:
 			// Process the data based on the topic
 			// fmt.Printf("Received data from topic %s: %s\n", message.Topic, message.Data)
-			err := sendDataOverTCP(message)
+			err := sendTCPData(message)
 			if err !=nil{
 				println("tcp error: ", err)
 			}
@@ -70,27 +80,9 @@ var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err
 	fmt.Printf("Connection lost: %v", err)
 }
 
-func readConfig() Config {
-	var config Config
+// TCP TCP TCP TCP TCP ------------------------------------------
 
-	// Read the JSON file.
-    jsonFile, err := os.ReadFile("config.json")
-    if err != nil {
-        fmt.Println(err)
-        return config
-    }
-
-    // Decode the JSON file into the config struct.
-    err = json.Unmarshal(jsonFile, &config)
-    if err != nil {
-        fmt.Println(err)
-        return config
-    }
-
-	return config
-}
-
-func sendDataOverTCP(message Message) error {
+func sendTCPData(message Message) error {
 	// Connect to the TCP server
 	conn, err := net.Dial("tcp", config.TcpAddress)
 	if err != nil {
@@ -105,7 +97,7 @@ func sendDataOverTCP(message Message) error {
 }
 
 // Listen to Tcp port with helper fxn handleConnection
-func startTCPServer(address string) {
+func receiveTCPData(address string) {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		log.Fatalf("Error starting TCP server: %v", err)
@@ -132,7 +124,42 @@ func handleConnection(conn net.Conn) {
 			log.Printf("Error reading from connection: %v", err)
 			return
 		}
-		fmt.Printf("Received message: %s", message)
+		// handle tcp message
+		//fmt.Printf("Received tcp message: %s", message)
+		tcpDataChannel <- message
 	}
 }
 
+// Handle Received tcp data
+func processTcpData() {
+	publishClient := mqttConnect("mqttPublish", config.BrokerURL, config.BrokerPort)
+	for {
+		select {
+		case message := <-tcpDataChannel:
+			// Process the data based on the topic
+			fmt.Printf("Received data from tcp connection: %s\n", message)
+			publishClient.Publish("mqtt2tcp2mqtt", 0, false, message)
+		}
+	}
+}
+
+// MISC MISC MISC MISC MISC ------------------------------------------
+func readConfig() Config {
+	var config Config
+
+	// Read the JSON file.
+    jsonFile, err := os.ReadFile("config.json")
+    if err != nil {
+        fmt.Println(err)
+        return config
+    }
+
+    // Decode the JSON file into the config struct.
+    err = json.Unmarshal(jsonFile, &config)
+    if err != nil {
+        fmt.Println(err)
+        return config
+    }
+
+	return config
+}
